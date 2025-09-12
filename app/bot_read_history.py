@@ -13,6 +13,14 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
+try:
+    from config import config
+    print("✅ Konfiguration geladen")
+except Exception as e:
+    print("❌ Config-Import fehlgeschlagen:", e)
+    traceback.print_exc()
+    sys.exit(1)
+
 START_URL = "https://viluu.de/mod99/chat/screen"
 
 JS_READ_HISTORY = r"""
@@ -62,20 +70,25 @@ def main():
             print("🌐 Seite geladen:", START_URL)
 
             print("✅ Chat-Seite geöffnet. Melde dich an und gehe zur Chat-Ansicht.")
-            input("👉 Wenn du im Chat bist, drücke hier ENTER... ")
+            if not config.auto_skip_manual:
+                input("👉 Wenn du im Chat bist, drücke hier ENTER... ")
+            else:
+                config.log_status("Auto-Skip aktiviert: Überspringe manuelle Eingabe...")
 
             try:
-                print("⌛ warte auf DOM/Netz…")
-                page.wait_for_load_state("domcontentloaded", timeout=20000)
-                page.wait_for_load_state("networkidle", timeout=20000)
-                page.wait_for_selector(".messages-container", timeout=20000)
-                page.wait_for_selector(".messages-container .message-card", timeout=20000)
+                config.log_debug("Warte auf DOM/Netz…")
+                page.wait_for_load_state("domcontentloaded", timeout=config.page_load_timeout)
+                page.wait_for_load_state("networkidle", timeout=config.page_load_timeout)
+                page.wait_for_selector(".messages-container", timeout=config.page_load_timeout)
+                page.wait_for_selector(".messages-container .message-card", timeout=config.page_load_timeout)
                 print("✅ Chat-Container & Cards gefunden")
             except Error as e:
                 print("\n⚠️  Konnte keinen Nachrichtenbereich finden.")
-                print("Fehler:", e)
-                traceback.print_exc()
-                input("ENTER zum Schließen…")
+                config.log_debug(f"Fehler: {e}")
+                if config.debug_level >= 2:
+                    traceback.print_exc()
+                if not config.auto_continue:
+                    input("ENTER zum Schließen…")
                 browser.close()
                 return
 
@@ -83,13 +96,13 @@ def main():
             last_err = None
             for attempt in range(3):
                 try:
-                    print(f"🔧 Lese Verlauf… Versuch {attempt+1}/3")
+                    config.log_debug(f"Lese Verlauf… Versuch {attempt+1}/3")
                     result_json = page.evaluate(JS_READ_HISTORY)
                     break
                 except Error as e:
                     last_err = e
-                    print("⚠️ evaluate-Fehler, retry…", e)
-                    page.wait_for_timeout(700)
+                    config.log_debug(f"evaluate-Fehler, retry… {e}")
+                    page.wait_for_timeout(config.retry_delay)
 
             if result_json is None:
                 print("\n🔴 Konnte Verlauf nicht auslesen.")

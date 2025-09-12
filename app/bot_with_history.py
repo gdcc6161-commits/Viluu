@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from .ai_client import generate_reply
 from .rules import filter_and_fix
+from .config import config
 
 load_dotenv()
 
@@ -45,6 +46,9 @@ def parse_ts_to_iso(raw_ts: str | None) -> str | None:
         return datetime.now().isoformat() # Fallback auf aktuelle Zeit
 
 def main(ki_provider: str):
+    config.log_status("Starte Bot-Automatisierung...")
+    config.log_debug(f"Debug-Level: {config.debug_level}, Polling-Intervall: {config.polling_interval}s")
+    
     with sync_playwright() as p:
         print("Starte Chromium-Browser...")
         browser = p.chromium.launch(headless=False)
@@ -62,28 +66,40 @@ def main(ki_provider: str):
             browser.close()
             return
             
-        print(" Fülle Login-Formular aus...")
+        config.log_debug("Fülle Login-Formular aus...")
         page.get_by_label("Nickname").fill(username)
         page.get_by_label("Password").fill(password)
         
-        print(" Klicke auf den Login-Button...")
+        config.log_debug("Klicke auf den Login-Button...")
         page.get_by_role("button", name="Log In").click()
         
-        input("--> BITTE FÜHRE JETZT DIE MANUELLEN SCHRITTE AUS UND NAVIGIERE ZUM CHAT. DRÜCKE DANN HIER ENTER...")
+        # Allow automation to skip manual step if configured
+        if config.auto_skip_manual:
+            config.log_status("Auto-Skip aktiviert: Überspringe manuelle Navigation...")
+            time.sleep(5)  # Give time for login to complete
+            page.goto(START_URL)
+            time.sleep(3)  # Allow page to load
+        else:
+            input("--> BITTE FÜHRE JETZT DIE MANUELLEN SCHRITTE AUS UND NAVIGIERE ZUM CHAT. DRÜCKE DANN HIER ENTER...")
 
         last_known_message_count = 0
         print("\n✅ Bot ist jetzt im Überwachungs- und Follow-Up-Modus...")
+        print(f"   Polling-Intervall: {config.polling_interval}s | Follow-Up nach: {config.follow_up_hours}h")
         print("   Drücke Strg+C im Terminal, um den Bot zu beenden.")
         
         while True:
             try:
+                config.log_verbose(f"Überprüfe Chat... (Nachrichten: {last_known_message_count})")
                 history = page.evaluate(JS_READ_HISTORY)
                 if not history:
-                    time.sleep(15)
+                    config.log_debug("Kein Chat-Verlauf gefunden, warte...")
+                    time.sleep(config.polling_interval)
                     continue
 
                 current_message_count = len(history)
                 latest_message = history[-1]
+                
+                config.log_verbose(f"Aktuelle Nachrichten: {current_message_count}, Letzte bekannt: {last_known_message_count}")
                 
                 # --- START: NEUE PROAKTIVE LOGIK ---
                 
@@ -97,10 +113,11 @@ def main(ki_provider: str):
 
                     if incoming_text:
                         # Nur antworten, wenn der Text NICHT leer ist
+                        config.log_status("Generiere Antwort auf neue Nachricht...")
                         generate_and_send_reply(page, ki_provider, history, latest_message)
                     else:
                         # Nachricht ist leer (z.B. Tipp-Indikator oder JS-SCRAPER FEHLER), ignoriere sie.
-                        print("   JS-Scraper hat leere Nachricht gelesen. Ignoriere und warte auf echten Text.")
+                        config.log_debug("JS-Scraper hat leere Nachricht gelesen. Ignoriere und warte auf echten Text.")
                     # --- ENDE: NEUE PRÜFUNG ---
 
                 # Szenario 2: Follow-Up, wenn unsere letzte Nachricht unbeantwortet ist
@@ -110,8 +127,9 @@ def main(ki_provider: str):
                     if last_message_time_iso:
                         time_since_last_message = datetime.now() - datetime.fromisoformat(last_message_time_iso)
                         
-                        if time_since_last_message > timedelta(hours=4):
-                            print(f"\n⏰ Follow-Up Trigger: Deine letzte Nachricht ist über 4 Stunden alt. Generiere eine Follow-Up Nachricht.")
+                        if time_since_last_message > timedelta(hours=config.follow_up_hours):
+                            print(f"\n⏰ Follow-Up Trigger: Deine letzte Nachricht ist über {config.follow_up_hours} Stunden alt. Generiere eine Follow-Up Nachricht.")
+                            config.log_status("Sende Follow-Up Nachricht...")
                             generate_and_send_reply(page, ki_provider, history, None) 
                             last_known_message_count += 1 # Wichtig: Zähler erhöhen, um Spam zu verhindern
                 
@@ -119,25 +137,32 @@ def main(ki_provider: str):
                     # Wenn keine neue Nachricht da ist, aktualisiere den Zähler für den nächsten Durchlauf
                     last_known_message_count = current_message_count
 
-                time.sleep(15)
+                config.log_verbose(f"Warte {config.polling_interval} Sekunden bis zur nächsten Überprüfung...")
+                time.sleep(config.polling_interval)
 
             except KeyboardInterrupt:
                 print("\nBot wird beendet.")
                 browser.close()
                 return
             except Exception as e:
-                print(f"Ein Fehler ist aufgetreten: {e}. Prüfe in 15 Sekunden erneut.")
-                time.sleep(15)
+                config.log_debug(f"Fehler aufgetreten: {type(e).__name__}: {e}")
+                if config.debug_level >= 2:
+                    import traceback
+                    traceback.print_exc()
+                print(f"⚠️ Ein Fehler ist aufgetreten: {e}. Prüfe in {config.polling_interval} Sekunden erneut.")
+                time.sleep(config.polling_interval)
 
 # --- NEUE FUNKTION, um Code-Wiederholung zu vermeiden ---
 def generate_and_send_reply(page, ki_provider, history, latest_message):
+    config.log_debug("Starte Antwort-Generierung...")
+    
     con = connect_db()
     bulk_save_messages(con, history)
     con.close()
-    print(f"💾 Verlauf gespeichert.")
+    config.log_debug("Verlauf in Datenbank gespeichert.")
 
     os.environ['KI_PROVIDER'] = ki_provider
-    print(f"🤖 KI-Modus '{ki_provider}' ist aktiviert. Generiere eine Antwort...")
+    config.log_status(f"KI-Modus '{ki_provider}' aktiviert. Generiere Antwort...")
     
     current_hour = datetime.now().hour
     if 5 <= current_hour < 12: tageszeit = "Morgen"
@@ -145,9 +170,12 @@ def generate_and_send_reply(page, ki_provider, history, latest_message):
     elif 18 <= current_hour < 22: tageszeit = "Abend"
     else: tageszeit = "Nacht"
     
+    config.log_verbose(f"Tageszeit erkannt: {tageszeit}")
+    
     # --- NEUER KONTEXT FÜR FOLLOW-UP ---
     if latest_message is None:
         # Dies ist ein proaktiver Follow-Up (Szenario 2)
+        config.log_debug("Generiere Follow-Up Nachricht...")
         conversation_context = "Du hast vor einiger Zeit die letzte Nachricht geschrieben, aber keine Antwort erhalten. Schreibe jetzt eine kurze, freundliche und unaufdringliche Follow-Up Nachricht, um das Gespräch wieder anzustoßen (z.B. 'Hey, wollte nur mal kurz nachfragen, wie dein Tag so war 😊')."
         user_text = "" # Es gibt keine neue User-Nachricht
     else:
@@ -155,8 +183,10 @@ def generate_and_send_reply(page, ki_provider, history, latest_message):
         user_text = latest_message.get("text", "") # (Wir wissen dank der Prüfung oben, dass dieser Text nicht leer ist)
         is_new_conversation = len(history) <= 2
         if is_new_conversation:
+            config.log_debug("Neue Unterhaltung erkannt.")
             conversation_context = "Dies ist die allererste Nachricht in einer neuen Unterhaltung."
         else:
+            config.log_debug("Laufende Unterhaltung erkannt.")
             conversation_context = "Dies ist eine laufende Unterhaltung."
 
     # --- START: GENERISCHER MASTER PROMPT (FIX 3.0) ---
@@ -181,15 +211,19 @@ def generate_and_send_reply(page, ki_provider, history, latest_message):
     """
     # --- ENDE: GENERISCHER MASTER PROMPT ---
     
+    config.log_verbose(f"Verwende letzten {min(10, len(history))} Nachrichten als Kontext")
     history_for_ai = [{'direction': 'out' if msg.get('isMine') else 'in', 'text': msg.get('text', '')} for msg in history[-10:]]
+    
+    config.log_debug("Rufe KI-API auf...")
     ai_reply = generate_reply(history_for_ai, system_rules, user_text)
     
     if ai_reply:
-        print("✅ KI-Antwort erhalten.")
+        config.log_status("KI-Antwort erhalten. Füge in Eingabefeld ein...")
         filtered, flags = filter_and_fix(ai_reply)
         page.evaluate(JS_FILL_INPUT, {"value": filtered})
         print("\n✅ Antwort in Eingabefeld eingefügt (NICHT gesendet):")
         print("   ", filtered)
-        print(f"   Flags: {flags}")
+        config.log_debug(f"Filter-Flags: {flags}")
     else:
+        config.log_debug("KI konnte keine Antwort generieren.")
         print("⚠️ KI konnte keine Antwort generieren.")
