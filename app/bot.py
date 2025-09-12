@@ -10,6 +10,7 @@ from templates import (
     pick_template, pick_pause_lead,
     normalize_text, enforce_rules
 )
+from config import config
 
 # ---- Einstellungen ----
 START_URL = "https://viluu.de/mod99/chat/screen"
@@ -107,41 +108,51 @@ def main():
         page.goto(START_URL)
 
         print("✅ Chat-Seite geöffnet. Melde dich an und gehe zur Chat-Ansicht.")
-        input("👉 Wenn du im Chat bist, drücke hier ENTER... ")
+        if not config.auto_skip_manual:
+            input("👉 Wenn du im Chat bist, drücke hier ENTER... ")
+        else:
+            config.log_status("Auto-Skip aktiviert: Überspringe manuelle Eingabe...")
 
         # 1) Auf stabilen Chat warten
+        config.log_debug("Warte auf stabile Chat-Umgebung...")
         try:
-            page.wait_for_load_state("domcontentloaded", timeout=20000)
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except Error:
-            pass  # nicht kritisch
+            page.wait_for_load_state("domcontentloaded", timeout=config.page_load_timeout)
+            page.wait_for_load_state("networkidle", timeout=config.page_load_timeout)
+        except Error as e:
+            config.log_debug(f"Load state timeout (nicht kritisch): {e}")
 
         try:
-            page.wait_for_selector(".messages-container", timeout=20000)
-            page.wait_for_selector(".messages-container .message-card", timeout=20000)
+            page.wait_for_selector(".messages-container", timeout=config.page_load_timeout)
+            page.wait_for_selector(".messages-container .message-card", timeout=config.page_load_timeout)
+            config.log_debug("Chat-Container und Nachrichten gefunden.")
         except Error:
             print("\n⚠️  Konnte keinen Nachrichtenbereich finden. Bist du sicher in der Chat-Ansicht?")
-            input("ENTER zum Schließen...")
+            if not config.auto_continue:
+                input("ENTER zum Schließen...")
             browser.close()
             return
 
         # 2) Nachrichten auslesen (mit Retry, falls Auto-Reload)
+        config.log_debug("Lese Nachrichten aus...")
         result_json = None
         last_err = None
         for attempt in range(3):
             try:
+                config.log_verbose(f"Versuch {attempt+1}/3: Lade Nachrichten...")
                 result_json = page.evaluate(JS_READ_LAST_BOTH)
                 break
             except Error as e:
                 last_err = e
-                page.wait_for_timeout(700)  # kurz warten und erneut
+                config.log_debug(f"Fehler beim Laden: {e}")
+                page.wait_for_timeout(config.retry_delay)  # konfigurierbare Wartezeit
 
         if result_json is None:
             print("\n🔴 Konnte Nachrichten nicht auslesen (mehrfacher Reload?).")
             print("   Tipp: Nach dem Login kurz warten, dann ENTER drücken –")
             print("        oder die Seite mit F5 aktualisieren und wieder ENTER.")
-            print(f"   Letzter Fehler: {last_err}")
-            input("\nENTER zum Schließen...")
+            config.log_debug(f"Letzter Fehler: {last_err}")
+            if not config.auto_continue:
+                input("\nENTER zum Schließen...")
             browser.close()
             return
 
@@ -204,7 +215,10 @@ def main():
         else:
             print("\n⚠️  Konnte das Eingabefeld nicht finden.")
 
-        input("\nFertig. ENTER zum Schließen...")
+        if not config.auto_continue:
+            input("\nFertig. ENTER zum Schließen...")
+        else:
+            config.log_status("Auto-Continue aktiviert: Schließe automatisch...")
         browser.close()
 
 if __name__ == "__main__":
