@@ -3,3 +3,4 @@ sqlite-utils
 colorama
 requests
 python-dotenv
+google-generativeai
