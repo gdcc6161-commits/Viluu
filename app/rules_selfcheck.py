@@ -16,7 +16,7 @@ tests = [
 
 print("Starte Rules-Selbsttest...\n")
 for i, t in enumerate(tests, 1):
-    out, flags = filter_and_fix(t, gap_hours=25)  # 25h simuliert die >24h-Regel
+    out, flags = filter_and_fix(t)  # Remove invalid gap_hours parameter
     print(f"--- Test {i} ---")
     print("IN :", t)
     print("OUT:", out)

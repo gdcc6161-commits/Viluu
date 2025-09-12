@@ -1,4 +1,4 @@
-from templates import pick_template
+from app.templates import pick_template
 
 tests = [
     ("smalltalk", None),
